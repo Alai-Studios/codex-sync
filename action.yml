@@ -1,0 +1,63 @@
+name: 'Codex Sync'
+description: 'Sync files from a repository directory to a Spark Codex with intelligent diffing'
+author: 'Alai Studios'
+
+branding:
+  icon: 'refresh-cw'
+  color: 'blue'
+
+inputs:
+  spark_api_key:
+    description: 'Spark API Key (Authress service client access key with contents:write permissions)'
+    required: true
+  codex_id:
+    description: 'Codex ID to sync files to'
+    required: true
+  directory:
+    description: 'Directory path (relative to repo root) containing files to sync'
+    required: true
+  api_base_url:
+    description: 'Spark API base URL'
+    required: false
+    default: 'https://api.spark.my.alaispark.app'
+  file_extensions:
+    description: 'Comma-separated list of file extensions to sync (default: pdf,txt,md,mdx,png,jpg,jpeg,webp,gif,mp3,mp4)'
+    required: false
+    default: 'pdf,txt,md,mdx,png,jpg,jpeg,webp,gif,mp3,mp4'
+  dry_run:
+    description: 'If true, only show diff without making changes'
+    required: false
+    default: 'false'
+  delete_removed:
+    description: 'If true, delete files from Codex that no longer exist locally'
+    required: false
+    default: 'true'
+outputs:
+  files_added:
+    description: 'Number of files added to Codex'
+    value: ${{ steps.sync.outputs.files_added }}
+  files_updated:
+    description: 'Number of files updated in Codex'
+    value: ${{ steps.sync.outputs.files_updated }}
+  files_deleted:
+    description: 'Number of files deleted from Codex'
+    value: ${{ steps.sync.outputs.files_deleted }}
+  files_unchanged:
+    description: 'Number of files unchanged'
+    value: ${{ steps.sync.outputs.files_unchanged }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Sync files to Codex
+      id: sync
+      shell: bash
+      env:
+        SPARK_API_KEY: ${{ inputs.spark_api_key }}
+        CODEX_ID: ${{ inputs.codex_id }}
+        DIRECTORY: ${{ inputs.directory }}
+        API_BASE_URL: ${{ inputs.api_base_url }}
+        FILE_EXTENSIONS: ${{ inputs.file_extensions }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        DELETE_REMOVED: ${{ inputs.delete_removed }}
+      run: ${{ github.action_path }}/scripts/sync.sh
