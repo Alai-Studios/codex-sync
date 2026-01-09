@@ -49,6 +49,12 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+log_debug() {
+    if [ "${DEBUG:-false}" = "true" ]; then
+        echo -e "${CYAN}[DEBUG]${NC} $1"
+    fi
+}
+
 # Build find pattern from file extensions
 build_find_pattern() {
     local extensions="$1"
@@ -115,9 +121,16 @@ fetch_codex_inventory() {
             exit 1
         fi
 
+        # Debug: show response structure
+        log_debug "API response data count: $(echo "$body" | jq '.data | length')"
+        log_debug "First item structure: $(echo "$body" | jq -c '.data[0] | keys' 2>/dev/null || echo 'N/A')"
+
         # Parse response and append to inventory
         # Format: content_id<TAB>title<TAB>modified_at
-        echo "$body" | jq -r '.data[] | [.id, .title, .modified_at] | @tsv' >> "$CODEX_INVENTORY"
+        # Use explicit tab printing to avoid issues with @tsv and special characters
+        echo "$body" | jq -r '.data[] | "\(.id // "")\t\(.title // "")\t\(.modified_at // "")"' >> "$CODEX_INVENTORY"
+
+        log_debug "Sample parsed line: $(head -1 "$CODEX_INVENTORY" | cat -A 2>/dev/null || echo 'empty')"
 
         # Check pagination
         local count=$(echo "$body" | jq '.data | length')
@@ -132,8 +145,38 @@ fetch_codex_inventory() {
         page=$((page + 1))
     done
 
+    # Validate inventory format - each line should have exactly 2 tabs (3 fields)
+    local valid_count=0
+    local invalid_count=0
+    local validated_inventory=$(mktemp)
+
+    while IFS= read -r line; do
+        # Count tabs in line
+        local tab_count=$(echo "$line" | tr -cd '\t' | wc -c)
+        if [ "$tab_count" -eq 2 ]; then
+            echo "$line" >> "$validated_inventory"
+            valid_count=$((valid_count + 1))
+        else
+            invalid_count=$((invalid_count + 1))
+            if [ "$invalid_count" -le 3 ]; then
+                log_warning "Skipping malformed inventory entry: $line"
+            fi
+        fi
+    done < "$CODEX_INVENTORY"
+
+    if [ "$invalid_count" -gt 3 ]; then
+        log_warning "... and $((invalid_count - 3)) more malformed entries"
+    fi
+
+    # Replace inventory with validated version
+    mv "$validated_inventory" "$CODEX_INVENTORY"
+
     local codex_count=$(wc -l < "$CODEX_INVENTORY" | xargs)
     log_success "Found $codex_count files in Codex"
+
+    if [ "$invalid_count" -gt 0 ]; then
+        log_warning "Skipped $invalid_count malformed entries from API response"
+    fi
 }
 
 # =============================================================================
