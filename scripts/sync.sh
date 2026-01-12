@@ -410,6 +410,18 @@ execute_sync() {
 
     # Delete then re-upload updated files
     while IFS=$'\t' read -r identifier filepath codex_id local_date codex_date; do
+        # Skip corrupted entries where identifier is a content_id or timestamp
+        if [[ "$identifier" =~ ^dc_[0-9a-f-]+$ ]] || [[ "$identifier" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+            log_debug "Skipping corrupted update entry: $identifier"
+            continue
+        fi
+
+        # Skip if file doesn't exist
+        if [ ! -f "$filepath" ]; then
+            log_debug "Skipping update - file not found: $filepath"
+            continue
+        fi
+
         log_info "Updating: $identifier"
 
         # Delete existing
