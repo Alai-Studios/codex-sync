@@ -49,6 +49,12 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+log_debug() {
+    if [ "${DEBUG:-false}" = "true" ]; then
+        echo -e "${CYAN}[DEBUG]${NC} $1"
+    fi
+}
+
 # Build find pattern from file extensions
 build_find_pattern() {
     local extensions="$1"
@@ -115,9 +121,16 @@ fetch_codex_inventory() {
             exit 1
         fi
 
+        # Debug: show response structure
+        log_debug "API response data count: $(echo "$body" | jq '.data | length')"
+        log_debug "First item structure: $(echo "$body" | jq -c '.data[0] | keys' 2>/dev/null || echo 'N/A')"
+
         # Parse response and append to inventory
         # Format: content_id<TAB>title<TAB>modified_at
-        echo "$body" | jq -r '.data[] | [.id, .title, .modified_at] | @tsv' >> "$CODEX_INVENTORY"
+        # Use explicit tab printing to avoid issues with @tsv and special characters
+        echo "$body" | jq -r '.data[] | "\(.id // "")\t\(.title // "")\t\(.modified_at // "")"' >> "$CODEX_INVENTORY"
+
+        log_debug "Sample parsed line: $(head -1 "$CODEX_INVENTORY" | cat -A 2>/dev/null || echo 'empty')"
 
         # Check pagination
         local count=$(echo "$body" | jq '.data | length')
@@ -132,8 +145,61 @@ fetch_codex_inventory() {
         page=$((page + 1))
     done
 
+    # Validate inventory format and content
+    local valid_count=0
+    local invalid_count=0
+    local corrupted_count=0
+    local validated_inventory=$(mktemp)
+
+    while IFS= read -r line; do
+        # Count tabs in line - should have exactly 2 tabs (3 fields)
+        local tab_count=$(echo "$line" | tr -cd '\t' | wc -c)
+        if [ "$tab_count" -ne 2 ]; then
+            invalid_count=$((invalid_count + 1))
+            if [ "$invalid_count" -le 3 ]; then
+                log_warning "Skipping malformed inventory entry: $line"
+            fi
+            continue
+        fi
+
+        # Extract title (second field) and validate it's not a content_id or timestamp
+        local title=$(echo "$line" | cut -f2)
+
+        # Skip entries where title looks like a content ID (dc_<uuid> pattern)
+        if [[ "$title" =~ ^dc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            corrupted_count=$((corrupted_count + 1))
+            log_debug "Skipping corrupted entry (title is content_id): $title"
+            continue
+        fi
+
+        # Skip entries where title looks like an ISO timestamp (YYYY-MM-DDTHH:MM:SS pattern)
+        if [[ "$title" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            corrupted_count=$((corrupted_count + 1))
+            log_debug "Skipping corrupted entry (title is timestamp): $title"
+            continue
+        fi
+
+        # Valid entry
+        echo "$line" >> "$validated_inventory"
+        valid_count=$((valid_count + 1))
+    done < "$CODEX_INVENTORY"
+
+    if [ "$invalid_count" -gt 3 ]; then
+        log_warning "... and $((invalid_count - 3)) more malformed entries"
+    fi
+
+    # Replace inventory with validated version
+    mv "$validated_inventory" "$CODEX_INVENTORY"
+
     local codex_count=$(wc -l < "$CODEX_INVENTORY" | xargs)
-    log_success "Found $codex_count files in Codex"
+    log_success "Found $codex_count valid files in Codex"
+
+    if [ "$invalid_count" -gt 0 ]; then
+        log_warning "Skipped $invalid_count malformed entries from API response"
+    fi
+    if [ "$corrupted_count" -gt 0 ]; then
+        log_warning "Skipped $corrupted_count corrupted entries (title was content_id or timestamp)"
+    fi
 }
 
 # =============================================================================
@@ -344,6 +410,18 @@ execute_sync() {
 
     # Delete then re-upload updated files
     while IFS=$'\t' read -r identifier filepath codex_id local_date codex_date; do
+        # Skip corrupted entries where identifier is a content_id or timestamp
+        if [[ "$identifier" =~ ^dc_[0-9a-f-]+$ ]] || [[ "$identifier" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+            log_debug "Skipping corrupted update entry: $identifier"
+            continue
+        fi
+
+        # Skip if file doesn't exist
+        if [ ! -f "$filepath" ]; then
+            log_debug "Skipping update - file not found: $filepath"
+            continue
+        fi
+
         log_info "Updating: $identifier"
 
         # Delete existing

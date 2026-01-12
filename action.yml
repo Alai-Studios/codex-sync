@@ -32,6 +32,10 @@ inputs:
     description: 'If true, delete files from Codex that no longer exist locally'
     required: false
     default: 'true'
+  debug:
+    description: 'If true, enable debug logging for troubleshooting'
+    required: false
+    default: 'false'
 outputs:
   files_added:
     description: 'Number of files added to Codex'
@@ -60,4 +64,5 @@ runs:
         FILE_EXTENSIONS: ${{ inputs.file_extensions }}
         DRY_RUN: ${{ inputs.dry_run }}
         DELETE_REMOVED: ${{ inputs.delete_removed }}
+        DEBUG: ${{ inputs.debug }}
       run: ${{ github.action_path }}/scripts/sync.sh
