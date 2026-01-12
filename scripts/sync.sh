@@ -145,23 +145,43 @@ fetch_codex_inventory() {
         page=$((page + 1))
     done
 
-    # Validate inventory format - each line should have exactly 2 tabs (3 fields)
+    # Validate inventory format and content
     local valid_count=0
     local invalid_count=0
+    local corrupted_count=0
     local validated_inventory=$(mktemp)
 
     while IFS= read -r line; do
-        # Count tabs in line
+        # Count tabs in line - should have exactly 2 tabs (3 fields)
         local tab_count=$(echo "$line" | tr -cd '\t' | wc -c)
-        if [ "$tab_count" -eq 2 ]; then
-            echo "$line" >> "$validated_inventory"
-            valid_count=$((valid_count + 1))
-        else
+        if [ "$tab_count" -ne 2 ]; then
             invalid_count=$((invalid_count + 1))
             if [ "$invalid_count" -le 3 ]; then
                 log_warning "Skipping malformed inventory entry: $line"
             fi
+            continue
         fi
+
+        # Extract title (second field) and validate it's not a content_id or timestamp
+        local title=$(echo "$line" | cut -f2)
+
+        # Skip entries where title looks like a content ID (dc_<uuid> pattern)
+        if [[ "$title" =~ ^dc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            corrupted_count=$((corrupted_count + 1))
+            log_debug "Skipping corrupted entry (title is content_id): $title"
+            continue
+        fi
+
+        # Skip entries where title looks like an ISO timestamp (YYYY-MM-DDTHH:MM:SS pattern)
+        if [[ "$title" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+            corrupted_count=$((corrupted_count + 1))
+            log_debug "Skipping corrupted entry (title is timestamp): $title"
+            continue
+        fi
+
+        # Valid entry
+        echo "$line" >> "$validated_inventory"
+        valid_count=$((valid_count + 1))
     done < "$CODEX_INVENTORY"
 
     if [ "$invalid_count" -gt 3 ]; then
@@ -172,10 +192,13 @@ fetch_codex_inventory() {
     mv "$validated_inventory" "$CODEX_INVENTORY"
 
     local codex_count=$(wc -l < "$CODEX_INVENTORY" | xargs)
-    log_success "Found $codex_count files in Codex"
+    log_success "Found $codex_count valid files in Codex"
 
     if [ "$invalid_count" -gt 0 ]; then
         log_warning "Skipped $invalid_count malformed entries from API response"
+    fi
+    if [ "$corrupted_count" -gt 0 ]; then
+        log_warning "Skipped $corrupted_count corrupted entries (title was content_id or timestamp)"
     fi
 }
 
